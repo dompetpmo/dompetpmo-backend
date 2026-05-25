@@ -17,7 +17,17 @@ class HabitController extends Controller
             ->orderBy('created_at', 'desc')
             ->get();
 
-        return $this->ok($habits, 'Daftar habit berhasil diambil');
+        $completedCount = $habits->filter(fn ($habit) => (int) $habit->current_count >= (int) $habit->target_count)->count();
+        $longestStreak = $habits->max('current_count') ?? 0;
+
+        return $this->ok($habits, 'Daftar habit berhasil diambil', [
+            'streak' => [
+                'current_streak' => (int) $completedCount,
+                'longest_streak' => (int) $longestStreak,
+                'last_updated_label' => 'Updated today',
+                'badge_title' => $completedCount > 0 ? 'Consistency Builder' : 'Consistency Starter',
+            ],
+        ]);
     }
 
     public function store(Request $request)
@@ -53,6 +63,29 @@ class HabitController extends Controller
         $habit->update(['current_count' => ((int) $habit->current_count) + 1]);
 
         return $this->ok($habit->fresh(), 'Progress habit bertambah');
+    }
+
+    public function update(Request $request, string $id)
+    {
+        $habit = Habit::where('_id', $id)
+            ->where('user_id', (string) $request->user()->_id)
+            ->first();
+
+        if (!$habit) {
+            return $this->fail('Habit tidak ditemukan', [], 404);
+        }
+
+        $validated = $request->validate([
+            'title' => 'sometimes|required|string|max:255',
+            'description' => 'sometimes|required|string|max:500',
+            'target_count' => 'sometimes|required|integer|min:1',
+            'frequency' => 'sometimes|required|in:daily,weekly',
+            'active' => 'sometimes|required|boolean',
+        ]);
+
+        $habit->update($validated);
+
+        return $this->ok($habit->fresh(), 'Habit berhasil diperbarui');
     }
 
     public function reset(Request $request, string $id)

@@ -15,6 +15,7 @@ class UserNotification extends Model
         'subtitle',
         'time_label',
         'read',
+        'event_key',
     ];
 
     protected $casts = [

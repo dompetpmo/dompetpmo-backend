@@ -13,11 +13,25 @@ class NotificationController extends Controller
 
     public function index(Request $request)
     {
-        $notifications = UserNotification::where('user_id', (string) $request->user()->_id)
+        $perPage = max(1, min((int) $request->query('per_page', 20), 100));
+        $page = max(1, (int) $request->query('page', 1));
+
+        $query = UserNotification::where('user_id', (string) $request->user()->_id)
             ->orderBy('created_at', 'desc')
+            ->orderBy('_id', 'desc');
+
+        $total = $query->count();
+        $notifications = $query
+            ->skip(($page - 1) * $perPage)
+            ->take($perPage)
             ->get();
 
-        return $this->ok($notifications, 'Notifikasi berhasil diambil');
+        return $this->ok($notifications, 'Notifikasi berhasil diambil', [
+            'page' => $page,
+            'per_page' => $perPage,
+            'total' => $total,
+            'has_more' => ($page * $perPage) < $total,
+        ]);
     }
 
     public function store(Request $request)

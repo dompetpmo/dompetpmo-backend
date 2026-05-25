@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ProfileSetting;
 use App\Models\UserNotification;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
 
 class ProfileController extends Controller
@@ -88,6 +89,24 @@ class ProfileController extends Controller
         $profile->update(['notification_settings' => $validated]);
 
         return $this->ok($profile->fresh(), 'Pengaturan notifikasi diperbarui');
+    }
+
+    public function changePassword(Request $request)
+    {
+        $validated = $request->validate([
+            'current_password' => 'required|string',
+            'new_password' => 'required|string|min:8|confirmed',
+        ]);
+
+        $user = $request->user();
+        if (!$user || !Hash::check($validated['current_password'], $user->password)) {
+            return $this->fail('Current password salah', [], 422);
+        }
+
+        $user->password = Hash::make($validated['new_password']);
+        $user->save();
+
+        return $this->ok(null, 'Password berhasil diperbarui');
     }
 
     private function resolveProfile(Request $request): ProfileSetting

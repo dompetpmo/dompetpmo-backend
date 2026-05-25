@@ -17,11 +17,15 @@ class Goal extends Model
         'target_date_label',
         'linked_wallet',
         'contributions',
+        'auto_topup_enabled',
+        'auto_topup_percent',
     ];
 
     protected $casts = [
         'target_amount' => 'float',
         'current_amount' => 'float',
         'contributions' => 'array',
+        'auto_topup_enabled' => 'boolean',
+        'auto_topup_percent' => 'float',
     ];
 }

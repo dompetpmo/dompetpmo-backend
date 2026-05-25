@@ -2,12 +2,14 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Helpers\DeviceParser;
 use App\Http\Controllers\Api\Concerns\ApiResponse;
 use App\Http\Controllers\Controller;
 use App\Models\Goal;
 use App\Models\Habit;
 use App\Models\ProfileSetting;
 use App\Models\User;
+use App\Models\UserSession;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 
@@ -72,6 +74,8 @@ class UserController extends Controller
                 'target_date_label' => 'Dec 2026',
                 'linked_wallet' => 'Main Wallet',
                 'contributions' => [],
+                'auto_topup_enabled' => false,
+                'auto_topup_percent' => 0,
             ]
         );
 
@@ -89,10 +93,26 @@ class UserController extends Controller
             ]
         );
 
-        $plainTextToken = $user->createToken('auth_token')->plainTextToken;
+        $tokenResult = $user->createToken('auth_token');
+        $plainTextToken = $tokenResult->plainTextToken;
         $token = str_contains($plainTextToken, '|')
             ? explode('|', $plainTextToken, 2)[1]
             : $plainTextToken;
+
+        $device = DeviceParser::parse($request->userAgent() ?? '');
+        UserSession::create([
+            'user_id'        => (string) $user->_id,
+            'token_id'       => (string) $tokenResult->accessToken->getKey(),
+            'device_name'    => $device['device_name'],
+            'device_type'    => $device['device_type'],
+            'platform'       => $device['platform'],
+            'ip_address'     => $request->ip(),
+            'user_agent'     => substr($request->userAgent() ?? '', 0, 512),
+            'is_active'      => true,
+            'logged_in_at'   => now(),
+            'last_active_at' => now(),
+            'logged_out_at'  => null,
+        ]);
 
         return $this->ok([
             'user' => $user,
@@ -114,10 +134,26 @@ class UserController extends Controller
             return $this->fail('Email atau password salah', [], 401);
         }
 
-        $plainTextToken = $user->createToken('auth_token')->plainTextToken;
+        $tokenResult = $user->createToken('auth_token');
+        $plainTextToken = $tokenResult->plainTextToken;
         $token = str_contains($plainTextToken, '|')
             ? explode('|', $plainTextToken, 2)[1]
             : $plainTextToken;
+
+        $device = DeviceParser::parse($request->userAgent() ?? '');
+        UserSession::create([
+            'user_id'        => (string) $user->_id,
+            'token_id'       => (string) $tokenResult->accessToken->getKey(),
+            'device_name'    => $device['device_name'],
+            'device_type'    => $device['device_type'],
+            'platform'       => $device['platform'],
+            'ip_address'     => $request->ip(),
+            'user_agent'     => substr($request->userAgent() ?? '', 0, 512),
+            'is_active'      => true,
+            'logged_in_at'   => now(),
+            'last_active_at' => now(),
+            'logged_out_at'  => null,
+        ]);
 
         return $this->ok([
             'user' => $user,
@@ -133,7 +169,19 @@ class UserController extends Controller
 
     public function logout(Request $request)
     {
+        $tokenId = (string) $request->user()?->currentAccessToken()?->getKey();
         $request->user()?->currentAccessToken()?->delete();
+
+        if ($tokenId) {
+            UserSession::where('token_id', $tokenId)
+                ->where('is_active', true)
+                ->update([
+                    'is_active'      => false,
+                    'logged_out_at'  => now(),
+                    'last_active_at' => now(),
+                ]);
+        }
+
         return $this->ok(null, 'Logout berhasil');
     }
 
