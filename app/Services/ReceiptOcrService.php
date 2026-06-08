@@ -24,9 +24,11 @@ class ReceiptOcrService
             return $this->fallbackResult('image-unreadable');
         }
 
-        $model = (string) config('services.gemini.model', 'gemini-2.5-flash');
+        // gemini-1.5-flash is the stable production model; gemini-2.5-flash is
+        // still experimental and can return 502/503 under load.
+        $model = (string) config('services.gemini.model', 'gemini-1.5-flash');
         $apiBase = rtrim((string) config('services.gemini.api_base'), '/');
-        $timeout = (int) config('services.gemini.timeout', 45);
+        $timeout = (int) config('services.gemini.timeout', 30);
         $endpoint = "{$apiBase}/models/{$model}:generateContent";
 
         $response = Http::timeout($timeout)
@@ -50,8 +52,36 @@ class ReceiptOcrService
                 ],
             ]);
 
+        // If primary model fails with 5xx, retry once with fallback model.
+        if (!$response->successful() && $response->status() >= 500) {
+            $fallbackModel = 'gemini-1.5-flash';
+            if ($model !== $fallbackModel) {
+                $fallbackEndpoint = "{$apiBase}/models/{$fallbackModel}:generateContent";
+                $response = Http::timeout($timeout)
+                    ->acceptJson()
+                    ->withQueryParameters(['key' => $apiKey])
+                    ->post($fallbackEndpoint, [
+                        'contents' => [[
+                            'parts' => [
+                                ['text' => $this->prompt()],
+                                [
+                                    'inline_data' => [
+                                        'mime_type' => $mimeType,
+                                        'data' => base64_encode($imageBytes),
+                                    ],
+                                ],
+                            ],
+                        ]],
+                        'generationConfig' => [
+                            'temperature' => 0.1,
+                            'responseMimeType' => 'application/json',
+                        ],
+                    ]);
+            }
+        }
+
         if (!$response->successful()) {
-            throw new \RuntimeException('Gemini request failed: '.$response->status().' '.$response->body());
+            throw new \RuntimeException('Gemini request failed: '.$response->status().' '.substr($response->body(), 0, 500));
         }
 
         $raw = $response->json();

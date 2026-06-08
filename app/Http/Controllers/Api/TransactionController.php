@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers\Api;
 
-use App\Jobs\ProcessReceiptOcrJob;
 use App\Http\Controllers\Api\Concerns\ApiResponse;
 use App\Http\Controllers\Controller;
 use App\Models\ReceiptOcrFeedback;
@@ -393,49 +392,15 @@ class TransactionController extends Controller
             'finished_at' => null,
         ]);
 
-        $dispatchMode = 'queue';
-        try {
-            ProcessReceiptOcrJob::dispatch((string) $ocrJob->_id);
-        } catch (\Throwable $dispatchError) {
-            Log::warning('ocr_job_queue_dispatch_failed_fallback_sync', [
-                'job_id' => (string) $ocrJob->_id,
-                'user_id' => (string) $request->user()->_id,
-                'error' => $dispatchError->getMessage(),
-            ]);
-
-            $dispatchMode = 'sync_fallback';
-            try {
-                ProcessReceiptOcrJob::dispatchSync((string) $ocrJob->_id);
-            } catch (\Throwable $syncError) {
-                $ocrJob->update([
-                    'status' => 'failed',
-                    'confidence' => 0,
-                    'error_code' => 'provider_error',
-                    'error_message' => $this->compactErrorMessage($syncError->getMessage()),
-                    'finished_at' => now(),
-                    'raw' => [
-                        'truncated' => true,
-                        'preview' => substr((string) $syncError->getMessage(), 0, 1000),
-                    ],
-                ]);
-            }
-        }
-
-        Log::info('ocr_job_queued', [
+        Log::info('ocr_job_created', [
             'job_id' => (string) $ocrJob->_id,
             'user_id' => (string) $request->user()->_id,
-            'status' => 'pending',
-            'dispatch_mode' => $dispatchMode,
         ]);
 
-        return $this->ok(
-            $ocrJob->fresh(),
-            $dispatchMode === 'queue'
-                ? 'OCR job submitted'
-                : 'OCR diproses dengan fallback mode',
-            ['dispatch_mode' => $dispatchMode],
-            202
-        );
+        // Return immediately — OCR is triggered lazily on the first poll (getOcr).
+        // Running OCR inline here caused Railway's HTTP proxy to return 502 when
+        // the Gemini API call exceeded the proxy's read timeout.
+        return $this->ok($ocrJob->fresh(), 'OCR job submitted', [], 202);
     }
 
     public function getOcr(Request $request, string $id)
@@ -446,6 +411,54 @@ class TransactionController extends Controller
 
         if (!$ocrJob) {
             return $this->fail('OCR job tidak ditemukan', [], 404);
+        }
+
+        // Lazy OCR processing: the first poll triggers the actual Gemini call.
+        // This keeps submitOcr fast and avoids Railway proxy timeouts on upload.
+        if ($ocrJob->status === 'pending') {
+            // Atomically claim the job so concurrent polls don't double-process.
+            $claimed = ReceiptOcrJob::where('_id', $id)
+                ->where('status', 'pending')
+                ->update(['status' => 'processing', 'started_at' => now()]);
+
+            if ($claimed) {
+                try {
+                    /** @var \App\Services\ReceiptOcrService $ocrService */
+                    $ocrService = app(\App\Services\ReceiptOcrService::class);
+                    $result = $ocrService->extract((string) $ocrJob->receipt_image_url);
+                    $extracted = is_array($result['extracted'] ?? null) ? $result['extracted'] : [];
+                    $confidence = is_numeric($result['confidence'] ?? null) ? (float) $result['confidence'] : 0.78;
+
+                    $ocrJob->update([
+                        'status' => 'success',
+                        'confidence' => $confidence,
+                        'extracted' => $extracted,
+                        'raw' => is_array($result['raw'] ?? null) ? $result['raw'] : [],
+                        'error_code' => null,
+                        'error_message' => null,
+                        'finished_at' => now(),
+                    ]);
+
+                    Log::info('ocr_job_success', [
+                        'job_id' => $id,
+                        'confidence' => $confidence,
+                    ]);
+                } catch (\Throwable $e) {
+                    $ocrJob->update([
+                        'status' => 'failed',
+                        'error_code' => 'provider_error',
+                        'error_message' => $this->compactErrorMessage($e->getMessage()),
+                        'finished_at' => now(),
+                    ]);
+
+                    Log::warning('ocr_job_failed', [
+                        'job_id' => $id,
+                        'error' => $this->compactErrorMessage($e->getMessage()),
+                    ]);
+                }
+
+                $ocrJob->refresh();
+            }
         }
 
         return $this->ok($ocrJob, 'OCR job detail berhasil diambil');
