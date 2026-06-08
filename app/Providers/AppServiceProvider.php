@@ -44,8 +44,16 @@ class AppServiceProvider extends ServiceProvider
         $this->ensureMongoIndexes();
     }
 
+    // Skip index creation after the first request per PHP-FPM worker process.
+    private static bool $indexesEnsured = false;
+
     private function ensureMongoIndexes(): void
     {
+        if (self::$indexesEnsured) {
+            return;
+        }
+        self::$indexesEnsured = true;
+
         try {
             $database = DB::connection('mongodb')->getMongoDB();
             $database->selectCollection('transactions')->createIndex([
