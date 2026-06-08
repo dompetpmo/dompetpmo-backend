@@ -8,6 +8,20 @@ use Illuminate\Support\Facades\Storage;
 
 class ReceiptOcrService
 {
+    public function extractFromBase64(string $base64, string $mimeType = 'image/jpeg'): array
+    {
+        if (app()->environment('testing')) {
+            return $this->fallbackResult('testing-environment');
+        }
+
+        $apiKey = (string) config('services.gemini.api_key');
+        if ($apiKey === '') {
+            return $this->fallbackResult('gemini-api-key-missing');
+        }
+
+        return $this->callGemini($base64, $mimeType);
+    }
+
     public function extract(string $imagePath): array
     {
         if (app()->environment('testing')) {
@@ -24,12 +38,21 @@ class ReceiptOcrService
             return $this->fallbackResult('image-unreadable');
         }
 
+        return $this->callGemini(base64_encode($imageBytes), $mimeType);
+    }
+
+    private function callGemini(string $base64, string $mimeType): array
+    {
+        $apiKey = (string) config('services.gemini.api_key');
+
         // gemini-1.5-flash is the stable production model; gemini-2.5-flash is
         // still experimental and can return 502/503 under load.
         $model = (string) config('services.gemini.model', 'gemini-1.5-flash');
         $apiBase = rtrim((string) config('services.gemini.api_base'), '/');
         $timeout = (int) config('services.gemini.timeout', 30);
         $endpoint = "{$apiBase}/models/{$model}:generateContent";
+
+        $inlineData = ['mime_type' => $mimeType, 'data' => $base64];
 
         $response = Http::timeout($timeout)
             ->acceptJson()
@@ -38,12 +61,7 @@ class ReceiptOcrService
                 'contents' => [[
                     'parts' => [
                         ['text' => $this->prompt()],
-                        [
-                            'inline_data' => [
-                                'mime_type' => $mimeType,
-                                'data' => base64_encode($imageBytes),
-                            ],
-                        ],
+                        ['inline_data' => $inlineData],
                     ],
                 ]],
                 'generationConfig' => [
@@ -64,12 +82,7 @@ class ReceiptOcrService
                         'contents' => [[
                             'parts' => [
                                 ['text' => $this->prompt()],
-                                [
-                                    'inline_data' => [
-                                        'mime_type' => $mimeType,
-                                        'data' => base64_encode($imageBytes),
-                                    ],
-                                ],
+                                ['inline_data' => $inlineData],
                             ],
                         ]],
                         'generationConfig' => [

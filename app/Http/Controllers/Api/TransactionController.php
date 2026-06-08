@@ -375,8 +375,12 @@ class TransactionController extends Controller
             'receipt_image' => 'required|file|image|max:5120',
         ]);
 
-        $path = $validated['receipt_image']->store('receipts', 'public');
-        $receiptImageUrl = Storage::disk('public')->url($path);
+        // Store image as base64 in MongoDB — Railway has an ephemeral filesystem
+        // so file paths are unreliable across restarts and deployments.
+        $file = $validated['receipt_image'];
+        $imageBytes = file_get_contents($file->getRealPath());
+        $mimeType = $file->getMimeType() ?: 'image/jpeg';
+        $imageBase64 = base64_encode($imageBytes);
 
         $ocrJob = ReceiptOcrJob::create([
             'user_id' => (string) $request->user()->_id,
@@ -384,7 +388,9 @@ class TransactionController extends Controller
             'confidence' => 0,
             'error_code' => null,
             'error_message' => null,
-            'receipt_image_url' => $receiptImageUrl,
+            'receipt_image_url' => null,
+            'receipt_image_base64' => $imageBase64,
+            'receipt_image_mime' => $mimeType,
             'raw' => null,
             'extracted' => null,
             'queued_at' => now(),
@@ -425,7 +431,15 @@ class TransactionController extends Controller
                 try {
                     /** @var \App\Services\ReceiptOcrService $ocrService */
                     $ocrService = app(\App\Services\ReceiptOcrService::class);
-                    $result = $ocrService->extract((string) $ocrJob->receipt_image_url);
+                    // Prefer base64 payload (stored at submit time); fall back to URL
+                    // for legacy jobs created before this change.
+                    $base64 = (string) ($ocrJob->receipt_image_base64 ?? '');
+                    $mime   = (string) ($ocrJob->receipt_image_mime ?? 'image/jpeg');
+                    if ($base64 !== '') {
+                        $result = $ocrService->extractFromBase64($base64, $mime);
+                    } else {
+                        $result = $ocrService->extract((string) $ocrJob->receipt_image_url);
+                    }
                     $extracted = is_array($result['extracted'] ?? null) ? $result['extracted'] : [];
                     $confidence = is_numeric($result['confidence'] ?? null) ? (float) $result['confidence'] : 0.78;
 
